@@ -1,4 +1,4 @@
-# BiliInteractiveVideoResolver
+# LibBiliInteractiveVideo
 
 Recursively resolves all parts of Bilibili interactive videos from an AID/BVID.
 
