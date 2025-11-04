@@ -50,8 +50,6 @@ public ref struct NamedNativeActionEnumerator<T>(ReadOnlySpan<char> expression)
                 default:
                     _current.Load = _current.Store;
                     _current.NativeAction.Op = NativeActionOperation.Assign;
-                    expr = expr[1..];
-                    opIndex--;
                     break;
             }
         }
