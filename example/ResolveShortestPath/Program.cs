@@ -95,13 +95,38 @@ class Program
         FrozenDictionary<ulong, PersistentState> result = ResolveShortestPath(video);
         Console.WriteLine($"NODE:{result.Count}");
         List<LinkNode> seq = [];
+        FrozenDictionary<string, string> varDisplayNames = video.Variables.ExtraInfo
+            .Select(it => new KeyValuePair<string, string>(it.Id, it.Name ?? ""))
+            .ToFrozenDictionary();
+        var lookup = varDisplayNames.GetAlternateLookup<ReadOnlySpan<char>>();
+        ulong? trace = null;
+#if DEBUG
+        if (id == "BV1bhspzoENJ") trace = 43817460;
+#endif
         foreach ((ulong node, PersistentState state) in result)
         {
-            Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
-            Console.Write($"{node}:");
+            LinkNode? n;
+            if (trace != node)
+            {
+                if (!trace.HasValue)
+                {
+                    Console.WriteLine($"{node}:");
+                    Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
+                    n = state.Path;
+                    while (n is not null)
+                    {
+                        Console.Write($"<{n.Id}");
+                        n = n.Previous;
+                    }
+                    Console.WriteLine();
+                }
+                continue;
+            }
             video.Variables.Reset();
             seq.Clear();
-            LinkNode? n = state.Path;
+            Console.WriteLine($"{node}:");
+            Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
+            n = state.Path;
             while (n is not null)
             {
                 seq.Add(n);
@@ -110,18 +135,59 @@ class Program
             ulong prev = 0;
             for (int i = seq.Count; i-- > 0;)
             {
+                Console.WriteLine();
                 LinkNode nn = seq[i];
                 if (nn.Index >= 0)
                 {
-                    Console.Write($"={(char)('A' + nn.Index)}=>");
-                    video.Nodes[prev][nn.Index].PerformAction(video.Variables.Values);
+                    Edge<double> edge = video.Nodes[prev][nn.Index];
+                    Console.WriteLine($"==>{edge.Option}");
+                    bool first = true;
+                    foreach (NamedCondition<double> cond in new NamedConditionEnumerator<double>(edge.RawCondition))
+                    {
+                        if (!first)
+                            Console.Write(" &&");
+                        else
+                        {
+                            Console.Write("  C:");
+                            first = false;
+                        }
+                        Console.Write($" {lookup[cond.Name]} {cond.Condition.Op switch
+                        {
+                            ConditionOperation.EQ => "==",
+                            ConditionOperation.LE => "<=",
+                            ConditionOperation.LT => "<",
+                            ConditionOperation.GE => ">=",
+                            _ => ">",
+                        }} {cond.Condition.Value}");
+                    }
+                    if (!edge.CheckWithoutRandom(video.Variables.Values))
+                        Console.Write(" *** ERROR!");
+                    if (!first)
+                        Console.WriteLine();
+                    first = true;
+                    foreach (NamedNativeAction<double> action in new NamedNativeActionEnumerator<double>(edge.RawNativeAction))
+                    {
+                        if (first)
+                        {
+                            Console.Write("  N:");
+                            first = false;
+                        }
+                        Console.Write($" {lookup[action.Store]} {action.NativeAction.Op switch
+                        {
+                            NativeActionOperation.Add => "+=",
+                            NativeActionOperation.Subtract => "-=",
+                            _ => "=",
+                        }} {action.NativeAction.Value};");
+                    }
+                    if (!first)
+                        Console.WriteLine();
+                    edge.PerformAction(video.Variables.Values);
                 }
-                Console.Write(names[prev = nn.Id]);
+                Console.WriteLine($"{prev = nn.Id}:{names[nn.Id]}");
+                Console.WriteLine($"Va:[{string.Join(',', video.Variables.ExtraInfo
+                    .Where(it => !it.IsRandom)
+                    .Select(it => $"{it.Name}:{video.Variables.Values[it.ValueIndex]}"))}]");
             }
-            Console.WriteLine();
-            Console.WriteLine($"FinalV:[{string.Join(',', video.Variables.ExtraInfo
-                .Where(it => !it.IsRandom)
-                .Select(it => $"{it.Name}:{video.Variables.Values[it.ValueIndex]}"))}]");
         }
     }
     static FrozenDictionary<ulong, PersistentState> ResolveShortestPath(InteractiveVideo<double> video, int depthLimit = 100)

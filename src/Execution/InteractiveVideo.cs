@@ -20,7 +20,7 @@ public static class InteractiveVideo
         {
             if (variables is null)
             {
-                variables = new(node.HiddenVars.Select(Variable.ConvertFromAPI));
+                variables = new(node.HiddenVars?.Select(Variable.ConvertFromAPI));
                 initialNode = node.EdgeId;
             }
             if (node.Edges.Questions is null)
@@ -40,7 +40,7 @@ public static class InteractiveVideo
             }
             nodeDict[node.EdgeId] = [.. tmp];
         }
-        return new(nodeDict, variables ?? VariableHolder<double>.Empty);
+        return new(nodeDict, variables ?? VariableHolder<double>.Empty, initialNode);
     }
 }
 public class InteractiveVideo<T>(Dictionary<ulong, Edge<T>[]> nodes, VariableHolder<T> variables, ulong initialNode = 1)

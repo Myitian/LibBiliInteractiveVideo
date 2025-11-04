@@ -34,7 +34,7 @@ public static class XSteinEdgeinfoV2
         public Edges Edges { get; set; }
 
         [JsonPropertyName("hidden_vars")]
-        public List<HiddenVar> HiddenVars { get; set; }
+        public List<HiddenVar>? HiddenVars { get; set; }
 
     }
 

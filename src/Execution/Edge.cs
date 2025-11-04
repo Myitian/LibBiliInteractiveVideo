@@ -17,7 +17,7 @@ public static class Edge
             ?? CompileConditionWithoutRandomLambda(cond);
         Action<double[]>? nativeAction = cache?.GetNativeActionOrCompute(action, CompileNativeActionLambda)
             ?? CompileNativeActionLambda(action);
-        return new(choice.Id, condition, conditionWithoutRandom, nativeAction, cond, action);
+        return new(choice.Id, choice.Option, condition, conditionWithoutRandom, nativeAction, cond, action);
 
         Func<double[], bool>? CompileConditionLambda(scoped ReadOnlySpan<char> condition)
         {
@@ -48,6 +48,7 @@ public static class Edge
 }
 public class Edge<T>(
     ulong next,
+    string? option = null,
     Func<T[], bool>? condition = null,
     Func<T[], bool>? conditionWithoutRandom = null,
     Action<T[]>? nativeAction = null,
@@ -59,6 +60,7 @@ public class Edge<T>(
     private readonly Func<T[], bool>? _conditionWithoutRandom = conditionWithoutRandom;
     private readonly Action<T[]>? _nativeAction = nativeAction;
     public ulong Next { get; } = next;
+    public string? Option { get; } = option;
     public string? RawCondition { get; } = rawCondition;
     public string? RawNativeAction { get; } = rawNativeAction;
     public bool Check(T[] variables) => _condition?.Invoke(variables) ?? true;

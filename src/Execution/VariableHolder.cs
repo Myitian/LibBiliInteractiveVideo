@@ -16,10 +16,15 @@ public class VariableHolder<T>
     public ExtraInfo[] ExtraInfo { get; } = [];
     public int Count => Values.Length;
 
-    public VariableHolder(params IEnumerable<Variable<T>> variables)
+    public VariableHolder(params IEnumerable<Variable<T>>? variables)
     {
         _variables = [];
         _variablesLookup = _variables.GetAlternateLookup<ReadOnlySpan<char>>();
+        if (variables is null)
+        {
+            Values = _values = [];
+            return;
+        }
         List<(T, ExtraInfo)> vars = [];
         int i = 0;
         foreach (Variable<T> v in variables)
