@@ -3,7 +3,6 @@ using LibBiliInteractiveVideo.API;
 using LibBiliInteractiveVideo.Execution;
 using LibBiliInteractiveVideo.Execution.Compilation;
 using System.Collections.Frozen;
-using System.Diagnostics.CodeAnalysis;
 
 namespace ResolveShortestPath;
 
@@ -28,7 +27,8 @@ class Program
                 string? line = Console.ReadLine();
                 if (line is null)
                     break;
-                await ProcessId(httpClient, line);
+                ParseLine(line, out string id, out ulong? trace, out Mode mode);
+                await ProcessId(httpClient, id, trace, mode);
                 Console.WriteLine();
             }
         }
@@ -36,9 +36,21 @@ class Program
         {
             foreach (string line in args)
             {
-                await ProcessId(httpClient, line);
+                ParseLine(line, out string id, out ulong? trace, out Mode mode);
+                await ProcessId(httpClient, id, trace, mode);
                 Console.WriteLine();
             }
+        }
+
+        static void ParseLine(string line, out string id, out ulong? trace, out Mode mode)
+        {
+            string[] parts = line.Split(',', 3);
+            id = parts[0];
+            trace = null;
+            if (parts.Length > 1 && ulong.TryParse(parts[1], out ulong t))
+                trace = t;
+            if (!(parts.Length > 2 && Enum.TryParse(parts[2], true, out mode)))
+                mode = Mode.NodeId;
         }
     }
     static double CalculateRandomProbability(scoped ReadOnlySpan<char> condition, VariableHolder<double> variables)
@@ -81,38 +93,46 @@ class Program
         }
     }
 
-    static async Task ProcessId(HttpClient httpClient, string id)
+    static async Task ProcessId(HttpClient httpClient, string id, ulong? trace = null, Mode mode = Mode.NodeId)
     {
+        Console.WriteLine($"ProcessId:{id};Trace:{trace};Mode:{mode}");
         (ulong graphVersion, ulong aid, _) = await VideoUtility.GetGraphVersion(httpClient, id);
         Dictionary<ulong, string> names = [];
-        List<XSteinEdgeinfoV2.Data> edges = [];
-        await foreach ((XSteinEdgeinfoV2.Data edge, _) in VideoUtility.ResolveAllEdges(httpClient, graphVersion, aid: aid))
+        List<(XSteinEdgeinfoV2.Data, ulong)> edges = [];
+        await foreach ((XSteinEdgeinfoV2.Data, ulong) edge in VideoUtility.ResolveAllEdges(httpClient, graphVersion, aid: aid))
         {
-            names[edge.EdgeId] = edge.Title?.ReplaceLineEndings("") ?? "";
+            names[edge.Item1.EdgeId] = edge.Item1.Title?.ReplaceLineEndings("") ?? "";
             edges.Add(edge);
         }
         InteractiveVideo<double> video = InteractiveVideo.ConvertFromAPI(edges);
-        FrozenDictionary<ulong, PersistentState> result = ResolveShortestPath(video);
-        Console.WriteLine($"NODE:{result.Count}");
+        switch (mode)
+        {
+            case Mode.NodeId:
+                ResolveNodeId(trace, graphVersion, names, video);
+                break;
+            case Mode.Cid:
+                ResolveCid(trace, graphVersion, names, video);
+                break;
+        }
+    }
+
+    private static void ResolveNodeId(ulong? trace, ulong graphVersion, Dictionary<ulong, string> names, InteractiveVideo<double> video)
+    {
+        FrozenDictionary<ulong, PersistentState> result = ResolveShortestPathByNodeId(video);
+        Console.WriteLine($"GraphVersion:{graphVersion};Total:{result.Count}");
         List<LinkNode> seq = [];
         FrozenDictionary<string, string> varDisplayNames = video.Variables.ExtraInfo
             .Select(it => new KeyValuePair<string, string>(it.Id, it.Name ?? ""))
             .ToFrozenDictionary();
-        var lookup = varDisplayNames.GetAlternateLookup<ReadOnlySpan<char>>();
-        ulong? trace = null;
-#if DEBUG
-        if (id == "BV1bhspzoENJ") trace = 43817460;
-#endif
         foreach ((ulong node, PersistentState state) in result)
         {
-            LinkNode? n;
             if (trace != node)
             {
                 if (!trace.HasValue)
                 {
-                    Console.WriteLine($"{node}:");
+                    Console.WriteLine($"{node}:{names[node]}");
                     Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
-                    n = state.Path;
+                    LinkNode? n = state.Path;
                     while (n is not null)
                     {
                         Console.Write($"<{n.Id}");
@@ -122,75 +142,115 @@ class Program
                 }
                 continue;
             }
-            video.Variables.Reset();
-            seq.Clear();
             Console.WriteLine($"{node}:");
             Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
-            n = state.Path;
-            while (n is not null)
-            {
-                seq.Add(n);
-                n = n.Previous;
-            }
-            ulong prev = 0;
-            for (int i = seq.Count; i-- > 0;)
-            {
-                Console.WriteLine();
-                LinkNode nn = seq[i];
-                if (nn.Index >= 0)
-                {
-                    Edge<double> edge = video.Nodes[prev][nn.Index];
-                    Console.WriteLine($"==>{edge.Option}");
-                    bool first = true;
-                    foreach (NamedCondition<double> cond in new NamedConditionEnumerator<double>(edge.RawCondition))
-                    {
-                        if (!first)
-                            Console.Write(" &&");
-                        else
-                        {
-                            Console.Write("  C:");
-                            first = false;
-                        }
-                        Console.Write($" {lookup[cond.Name]} {cond.Condition.Op switch
-                        {
-                            ConditionOperation.EQ => "==",
-                            ConditionOperation.LE => "<=",
-                            ConditionOperation.LT => "<",
-                            ConditionOperation.GE => ">=",
-                            _ => ">",
-                        }} {cond.Condition.Value}");
-                    }
-                    if (!edge.CheckWithoutRandom(video.Variables.Values))
-                        Console.Write(" *** ERROR!");
-                    if (!first)
-                        Console.WriteLine();
-                    first = true;
-                    foreach (NamedNativeAction<double> action in new NamedNativeActionEnumerator<double>(edge.RawNativeAction))
-                    {
-                        if (first)
-                        {
-                            Console.Write("  N:");
-                            first = false;
-                        }
-                        Console.Write($" {lookup[action.Store]} {action.NativeAction.Op switch
-                        {
-                            NativeActionOperation.Add => "+=",
-                            NativeActionOperation.Subtract => "-=",
-                            _ => "=",
-                        }} {action.NativeAction.Value};");
-                    }
-                    if (!first)
-                        Console.WriteLine();
-                    edge.PerformAction(video.Variables.Values);
-                }
-                Console.WriteLine($"{prev = nn.Id}:{names[nn.Id]}");
-                Console.WriteLine($"Va:[{string.Join(',', video.Variables.ExtraInfo
-                    .Where(it => !it.IsRandom)
-                    .Select(it => $"{it.Name}:{video.Variables.Values[it.ValueIndex]}"))}]");
-            }
+            PrintDetailedPath(names, video, seq, varDisplayNames, state);
         }
     }
-    static FrozenDictionary<ulong, PersistentState> ResolveShortestPath(InteractiveVideo<double> video, int depthLimit = 100)
+
+    private static void ResolveCid(ulong? trace, ulong graphVersion, Dictionary<ulong, string> names, InteractiveVideo<double> video)
+    {
+        FrozenDictionary<ulong, PersistentState> result = ResolveShortestPathByCid(video);
+        Console.WriteLine($"GraphVersion:{graphVersion};Total:{result.Count}");
+        List<LinkNode> seq = [];
+        FrozenDictionary<string, string> varDisplayNames = video.Variables.ExtraInfo
+            .Select(it => new KeyValuePair<string, string>(it.Id, it.Name ?? ""))
+            .ToFrozenDictionary();
+        foreach ((ulong cid, PersistentState state) in result)
+        {
+            if (trace != cid)
+            {
+                if (!trace.HasValue)
+                {
+                    Console.WriteLine($"{cid}:");
+                    Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
+                    LinkNode? n = state.Path;
+                    while (n is not null)
+                    {
+                        Console.Write($"<{n.Id}");
+                        n = n.Previous;
+                    }
+                    Console.WriteLine();
+                }
+                continue;
+            }
+            Console.WriteLine($"{cid}:");
+            Console.WriteLine($"De:{state.Depth};Pr:{state.Probability}");
+            PrintDetailedPath(names, video, seq, varDisplayNames, state);
+        }
+    }
+
+    private static void PrintDetailedPath(Dictionary<ulong, string> names, InteractiveVideo<double> video, List<LinkNode> seq, FrozenDictionary<string, string> varDisplayNames, PersistentState state)
+    {
+        LinkNode? n;
+        video.Variables.Reset();
+        seq.Clear();
+        n = state.Path;
+        while (n is not null)
+        {
+            seq.Add(n);
+            n = n.Previous;
+        }
+        var lookup = varDisplayNames.GetAlternateLookup<ReadOnlySpan<char>>();
+        ulong prev = 0;
+        for (int i = seq.Count; i-- > 0;)
+        {
+            Console.WriteLine();
+            LinkNode nn = seq[i];
+            if (nn.Index >= 0)
+            {
+                Edge<double> edge = video.Nodes[prev].Edges[nn.Index];
+                Console.WriteLine($"==>{edge.Option}");
+                bool first = true;
+                foreach (NamedCondition<double> cond in new NamedConditionEnumerator<double>(edge.RawCondition))
+                {
+                    if (!first)
+                        Console.Write(" &&");
+                    else
+                    {
+                        Console.Write("  C:");
+                        first = false;
+                    }
+                    Console.Write($" {lookup[cond.Name]} {cond.Condition.Op switch
+                    {
+                        ConditionOperation.EQ => "==",
+                        ConditionOperation.LE => "<=",
+                        ConditionOperation.LT => "<",
+                        ConditionOperation.GE => ">=",
+                        _ => ">",
+                    }} {cond.Condition.Value}");
+                }
+                if (!edge.CheckWithoutRandom(video.Variables.Values))
+                    Console.Write(" *** ERROR!");
+                if (!first)
+                    Console.WriteLine();
+                first = true;
+                foreach (NamedNativeAction<double> action in new NamedNativeActionEnumerator<double>(edge.RawNativeAction))
+                {
+                    if (first)
+                    {
+                        Console.Write("  N:");
+                        first = false;
+                    }
+                    Console.Write($" {lookup[action.Store]} {action.NativeAction.Op switch
+                    {
+                        NativeActionOperation.Add => "+=",
+                        NativeActionOperation.Subtract => "-=",
+                        _ => "=",
+                    }} {action.NativeAction.Value};");
+                }
+                if (!first)
+                    Console.WriteLine();
+                edge.PerformAction(video.Variables.Values);
+            }
+            Console.WriteLine($"{prev = nn.Id}:{names[nn.Id]}");
+            Console.WriteLine($"Va:[{string.Join(',', video.Variables.ExtraInfo
+                .Where(it => !it.IsRandom)
+                .Select(it => $"{it.Name}:{video.Variables.Values[it.ValueIndex]}"))}]");
+        }
+    }
+
+    static FrozenDictionary<ulong, PersistentState> ResolveShortestPathByNodeId(InteractiveVideo<double> video, int depthLimit = 200)
     {
         if (video.Nodes.Count == 0)
             return FrozenDictionary<ulong, PersistentState>.Empty;
@@ -202,6 +262,7 @@ class Program
             .ToFrozenDictionary();
         FrozenDictionary<ulong, (Edge<double>, double)[]> nodes = video.Nodes
             .Select(it => new KeyValuePair<ulong, (Edge<double>, double)[]>(it.Key, [.. it.Value
+                .Edges
                 .Select(it => (it, CalculateRandomProbability(it.RawCondition, video.Variables)))]))
             .ToFrozenDictionary();
 
@@ -235,80 +296,63 @@ class Program
                 double p = state.Probability * prob;
                 if (p == 0 || !edge.CheckWithoutRandom(state.Variables))
                     continue;
-                double[] copy = new double[state.Variables.Length];
-                Array.Copy(state.Variables, copy, copy.Length);
+                double[] copy = [.. state.Variables];
                 edge.PerformAction(copy);
                 queue.Enqueue(new(edge.Next, copy, newDepth, p, new(i, edge.Next, state.LinkNode)));
             }
         }
         return best;
     }
-}
-
-public sealed class LinkNode(int index, ulong id, LinkNode? previous = null)
-{
-    public readonly int Index = index;
-    public readonly ulong Id = id;
-    public readonly LinkNode? Previous = previous;
-}
-
-public class ArrayEqualityComparer<T> : IEqualityComparer<T[]>
-{
-    public static readonly ArrayEqualityComparer<T> Instance = new();
-
-    public bool Equals(T[]? x, T[]? y) => x.AsSpan().SequenceEqual(y);
-    public int GetHashCode([DisallowNull] T[] obj) => obj.Length switch
+    static FrozenDictionary<ulong, PersistentState> ResolveShortestPathByCid(InteractiveVideo<double> video, int depthLimit = 200)
     {
-        0 => 0,
-        1 => HashCode.Combine(obj[0]),
-        2 => HashCode.Combine(obj[0], obj[1]),
-        3 => HashCode.Combine(obj[0], obj[1], obj[2]),
-        4 => HashCode.Combine(obj[0], obj[1], obj[2], obj[3]),
-        5 => HashCode.Combine(obj[0], obj[1], obj[2], obj[3], obj[4]),
-        6 => HashCode.Combine(obj[0], obj[1], obj[2], obj[3], obj[4], obj[5]),
-        7 => HashCode.Combine(obj[0], obj[1], obj[2], obj[3], obj[4], obj[5], obj[6]),
-        _ => HashCode.Combine(obj[0], obj[1], obj[2], obj[3], obj[4], obj[5], obj[6], obj[7]),
-    };
-}
+        if (video.Nodes.Count == 0)
+            return FrozenDictionary<ulong, PersistentState>.Empty;
+        FrozenDictionary<ulong, PersistentState> best = video.Nodes
+            .Select(it => new KeyValuePair<ulong, PersistentState>(it.Value.Cid, new(int.MaxValue, 0)))
+            .ToFrozenDictionary();
+        FrozenDictionary<ulong, HashSet<double[]>> visited = video.Nodes
+            .Select(it => new KeyValuePair<ulong, HashSet<double[]>>(it.Key, new(ArrayEqualityComparer<double>.Instance)))
+            .ToFrozenDictionary();
+        FrozenDictionary<ulong, (Edge<double>, ulong, double)[]> nodes = video.Nodes
+            .Select(it => new KeyValuePair<ulong, (Edge<double>, ulong, double)[]>(it.Key, [.. it.Value
+                .Edges
+                .Select(iit => (iit, video.Nodes[iit.Next].Cid, CalculateRandomProbability(iit.RawCondition, video.Variables)))]))
+            .ToFrozenDictionary();
 
-public struct State(ulong node, double[] variables, int depth, double probability, LinkNode linkNode)
-{
-    public ulong Node = node;
-    public double[] Variables = variables;
-    public int Depth = depth;
-    public double Probability = probability;
-    public LinkNode LinkNode = linkNode;
-}
+        // BFS-like
+        Queue<CidState> queue = [];
+        queue.Enqueue(new(video.Nodes[video.InitialNode].Cid, video.InitialNode, video.Variables.Values, 1, 1, new(-1, video.InitialNode)));
+        while (queue.Count > 0)
+        {
+            CidState state = queue.Dequeue();
 
-public sealed class PersistentState(int depth, double probability)
-    : IComparable<PersistentState>, IComparable<State>, IEquatable<PersistentState>, IEquatable<State>
-{
-    public int Depth = depth;
-    public double Probability = probability;
-    public LinkNode? Path = null;
+            HashSet<double[]> variableState = visited[state.Node];
+            if (!variableState.Add(state.Variables))
+                continue;
+            PersistentState bestState = best[state.Cid];
+            int compareResult = bestState.CompareTo(state);
+            if (compareResult > 0)
+            {
+                bestState.Depth = state.Depth;
+                bestState.Probability = state.Probability;
+                bestState.Path = state.LinkNode;
+            }
 
-    public int CompareTo(PersistentState? other)
-    {
-        if (other is null)
-            return -1;
-        int tmp = Depth.CompareTo(other.Depth);
-        if (tmp != 0)
-            return tmp;
-        return other.Probability.CompareTo(Probability);
+            int newDepth = state.Depth + 1;
+            if (newDepth > depthLimit)
+                continue;
+            int i = -1;
+            foreach ((Edge<double> edge, ulong cid, double prob) in nodes[state.Node])
+            {
+                i++;
+                double p = state.Probability * prob;
+                if (p == 0 || !edge.CheckWithoutRandom(state.Variables))
+                    continue;
+                double[] copy = [.. state.Variables];
+                edge.PerformAction(copy);
+                queue.Enqueue(new(cid, edge.Next, copy, newDepth, p, new(i, edge.Next, state.LinkNode)));
+            }
+        }
+        return best;
     }
-    public int CompareTo(State other)
-    {
-        int tmp = Depth.CompareTo(other.Depth);
-        if (tmp != 0)
-            return tmp;
-        return other.Probability.CompareTo(Probability);
-    }
-    public bool Equals(PersistentState? obj)
-        => obj is not null && Depth == obj.Depth && Probability == obj.Probability;
-    public bool Equals(State obj)
-        => Depth == obj.Depth && Probability == obj.Probability;
-    public override bool Equals(object? obj)
-        => Equals(obj as PersistentState) || (obj is State other && Equals(other));
-    public override int GetHashCode()
-        => HashCode.Combine(Depth, Probability);
 }
